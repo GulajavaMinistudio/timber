@@ -1,4 +1,5 @@
 apply plugin: 'com.android.library'
+apply plugin: 'com.kageiit.lintrules'
 apply plugin: 'checkstyle'
 
 task checkstyle(type: Checkstyle) {
@@ -32,31 +33,15 @@ android {
   }
 }
 
-configurations {
-  lintChecks
-}
-
 dependencies {
-  provided 'org.jetbrains:annotations:15.0'
+  compileOnly 'org.jetbrains:annotations:15.0'
 
-  testCompile deps.festandroid
-  testCompile deps.festassert
-  testCompile deps.junit
-  testCompile deps.robolectric
+  testImplementation deps.festandroid
+  testImplementation deps.festassert
+  testImplementation deps.junit
+  testImplementation deps.robolectric
 
-  lintChecks project(path: ':timber-lint', configuration: 'lintChecks')
-}
-
-task copyLintJar(type: Copy) {
-  from(configurations.lintChecks) {
-    rename { 'lint.jar' }
-  }
-  into 'build/intermediates/lint/'
-}
-
-project.afterEvaluate {
-  def compileLintTask = project.tasks.find { it.name == 'compileLint' }
-  compileLintTask.dependsOn(copyLintJar)
+  lintRules project(':timber-lint')
 }
 
 apply from: rootProject.file('gradle/gradle-mvn-push.gradle')
