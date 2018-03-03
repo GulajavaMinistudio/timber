@@ -15,10 +15,12 @@ import com.android.tools.lint.detector.api.Scope;
 import com.android.tools.lint.detector.api.Severity;
 import com.intellij.psi.PsiClass;
 import com.intellij.psi.PsiClassType;
+import com.intellij.psi.PsiElement;
 import com.intellij.psi.PsiField;
 import com.intellij.psi.PsiLiteralExpression;
 import com.intellij.psi.PsiMethod;
 import com.intellij.psi.PsiMethodCallExpression;
+import com.intellij.psi.PsiParameter;
 import com.intellij.psi.PsiType;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -32,6 +34,7 @@ import org.jetbrains.uast.UCallExpression;
 import org.jetbrains.uast.UElement;
 import org.jetbrains.uast.UExpression;
 import org.jetbrains.uast.UIfExpression;
+import org.jetbrains.uast.ULiteralExpression;
 import org.jetbrains.uast.UMethod;
 import org.jetbrains.uast.UQualifiedReferenceExpression;
 import org.jetbrains.uast.USimpleNameReferenceExpression;
@@ -503,40 +506,63 @@ public final class WrongTimberUsageDetector extends Detector implements Detector
 
   private void checkExceptionLogging(JavaContext context, UCallExpression call) {
     List<UExpression> arguments = call.getValueArguments();
+    int numArguments = arguments.size();
 
-    if (arguments.size() > 1 && isSubclassOf(context, arguments.get(0), Throwable.class)) {
-      UExpression arg2 = arguments.get(1);
+    if (numArguments > 1 && isSubclassOf(context, arguments.get(0), Throwable.class)) {
+      UExpression messageArg = arguments.get(1);
 
-      if (arg2 instanceof UQualifiedReferenceExpression) {
-        UQualifiedReferenceExpression arg2Expression = (UQualifiedReferenceExpression) arg2;
-        UExpression selector = arg2Expression.getSelector();
-        // what other UExpressions could be a selector?
-        if (isCallFromMethodInSubclassOf(context, (UCallExpression) selector, "getMessage",
-            "java.lang.Throwable")) {
-          LintFix fix = quickFixIssueExceptionLogging(arg2);
-          context.report(ISSUE_EXCEPTION_LOGGING, arg2, context.getLocation(call),
-              "Explicitly logging exception message is redundant", fix);
-          return;
-        }
+      if (isLoggingExceptionMessage(context, messageArg)) {
+        context.report(ISSUE_EXCEPTION_LOGGING, messageArg, context.getLocation(call),
+            "Explicitly logging exception message is redundant",
+            quickFixRemoveRedundantArgument(messageArg));
+        return;
       }
 
-      String s = evaluateString(context, arg2, true);
-      if (s == null && isField(arg2)) {
-        // Non-final fields can't be evaluated.
+      String s = evaluateString(context, messageArg, true);
+      if (s == null && !canEvaluateExpression(messageArg)) {
+        // Parameters and non-final fields can't be evaluated.
         return;
       }
 
       if (s == null || s.isEmpty()) {
-        LintFix fix = quickFixIssueExceptionLogging(arg2);
-        context.report(ISSUE_EXCEPTION_LOGGING, arg2, context.getLocation(call),
+        LintFix fix = quickFixRemoveRedundantArgument(messageArg);
+        context.report(ISSUE_EXCEPTION_LOGGING, messageArg, context.getLocation(call),
             "Use single-argument log method instead of null/empty message", fix);
+      }
+    } else if (numArguments == 1 && !isSubclassOf(context, arguments.get(0), Throwable.class)) {
+      UExpression messageArg = arguments.get(0);
+
+      if (isLoggingExceptionMessage(context, messageArg)) {
+        context.report(ISSUE_EXCEPTION_LOGGING, messageArg, context.getLocation(call),
+            "Explicitly logging exception message is redundant",
+            quickFixReplaceMessageWithThrowable(messageArg));
       }
     }
   }
 
-  private static boolean isField(UExpression expression) {
-    return expression instanceof USimpleNameReferenceExpression
-        && (((USimpleNameReferenceExpression) expression).resolve() instanceof PsiField);
+  private boolean isLoggingExceptionMessage(JavaContext context, UExpression arg) {
+    if (!(arg instanceof UQualifiedReferenceExpression)) {
+      return false;
+    }
+
+    UQualifiedReferenceExpression argExpression = (UQualifiedReferenceExpression) arg;
+    UExpression selector = argExpression.getSelector();
+
+    // what other UExpressions could be a selector?
+    return isCallFromMethodInSubclassOf(context, (UCallExpression) selector, "getMessage",
+        "java.lang.Throwable");
+  }
+
+  private static boolean canEvaluateExpression(UExpression expression) {
+    // TODO - try using CallGraph?
+    if (expression instanceof ULiteralExpression) {
+      return true;
+    }
+    if (!(expression instanceof USimpleNameReferenceExpression)) {
+      return false;
+    }
+    PsiElement resolvedElement = ((USimpleNameReferenceExpression) expression).resolve();
+    return !(resolvedElement instanceof PsiField || resolvedElement instanceof PsiParameter);
   }
 
   private static boolean isCallFromMethodInSubclassOf(JavaContext context, UCallExpression call,
@@ -680,11 +706,23 @@ public final class WrongTimberUsageDetector extends Detector implements Detector
         .build();
   }
 
-  private LintFix quickFixIssueExceptionLogging(UExpression arg2) {
+  private LintFix quickFixRemoveRedundantArgument(UExpression arg) {
     return fix().replace()
         .name("Remove redundant argument")
-        .text(", " + arg2.asSourceString())
+        .text(", " + arg.asSourceString())
         .with("")
+        .build();
+  }
+
+  private LintFix quickFixReplaceMessageWithThrowable(UExpression arg) {
+    // guaranteed based on callers of this method
+    UQualifiedReferenceExpression argExpression = (UQualifiedReferenceExpression) arg;
+    UExpression receiver = argExpression.getReceiver();
+
+    return fix().replace()
+        .name("Replace message with throwable")
+        .text(arg.asSourceString())
+        .with(receiver.asSourceString())
         .build();
   }
 
